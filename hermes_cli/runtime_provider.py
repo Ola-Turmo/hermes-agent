@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 import os
 import re
+import subprocess
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
@@ -41,6 +43,24 @@ def _normalize_custom_provider_name(value: str) -> str:
 def _loopback_hostname(host: str) -> bool:
     h = (host or "").lower().rstrip(".")
     return h in {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
+
+
+def _read_service_env_token(service_name: str, env_name: str) -> str:
+    try:
+        pid = subprocess.check_output(
+            ["systemctl", "show", service_name, "-p", "MainPID", "--value"],
+            text=True,
+        ).strip()
+        if not pid or pid == "0":
+            return ""
+        env_path = Path(f"/proc/{pid}/environ")
+        prefix = f"{env_name}=".encode()
+        for item in env_path.read_bytes().split(b"\0"):
+            if item.startswith(prefix):
+                return item[len(prefix):].decode(errors="ignore").strip()
+    except Exception:
+        return ""
+    return ""
 
 
 def _config_base_url_trustworthy_for_bare_custom(cfg_base_url: str, cfg_provider: str) -> bool:
@@ -1136,6 +1156,29 @@ def resolve_runtime_provider(
         )
         return azure_runtime
 
+    hybrid_model = "hybrid-deepseek-gpt55-medium"
+    model_cfg = _get_model_config()
+    effective_target_model = str(target_model or model_cfg.get("default") or "").strip()
+    cloudflare_prefix = "cloudflare-native/"
+    if effective_target_model.startswith(cloudflare_prefix):
+        effective_target_model = effective_target_model[len(cloudflare_prefix):]
+    if effective_target_model == hybrid_model:
+        hybrid_api_key = (
+            (explicit_api_key or "").strip()
+            or os.getenv("HERMES_API_TOKEN", "").strip()
+            or _read_service_env_token("paperclip-hermes-api.service", "HERMES_API_TOKEN")
+            or _read_service_env_token("paperclip-hermes-dashboard.service", "HERMES_API_TOKEN")
+        )
+        if hybrid_api_key:
+            return {
+                "provider": "custom",
+                "api_mode": "chat_completions",
+                "base_url": "http://127.0.0.1:8644/v1",
+                "api_key": hybrid_api_key,
+                "source": "hybrid-local-api",
+                "requested_provider": requested_provider,
+            }
+
     custom_runtime = _resolve_named_custom_runtime(
         requested_provider=requested_provider,
         explicit_api_key=explicit_api_key,
@@ -1150,7 +1193,6 @@ def resolve_runtime_provider(
         explicit_api_key=explicit_api_key,
         explicit_base_url=explicit_base_url,
     )
-    model_cfg = _get_model_config()
     explicit_runtime = _resolve_explicit_runtime(
         provider=provider,
         requested_provider=requested_provider,

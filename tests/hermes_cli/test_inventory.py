@@ -376,3 +376,52 @@ def test_payload_shape_compatible_with_modelpickerdialog_frontend():
     for row in payload["providers"]:
         missing = required_keys - row.keys()
         assert not missing, f"row {row['slug']} missing keys: {missing}"
+
+
+def test_hybrid_cloudflare_current_row_is_authenticated_local_route():
+    """The TUI picker must not ask for CF_AIG_TOKEN for the local hybrid route."""
+    rows = []
+    ctx = _empty_ctx(
+        provider="cloudflare-native",
+        model="hybrid-deepseek-gpt55-medium",
+    )
+    with _list_auth_returning(rows):
+        payload = build_models_payload(
+            ctx,
+            include_unconfigured=True,
+            picker_hints=True,
+            canonical_order=True,
+        )
+
+    row = next(r for r in payload["providers"] if r["slug"] == "cloudflare-native")
+    assert row["is_current"] is True
+    assert row["authenticated"] is True
+    assert row["source"] == "hybrid-local-api"
+    assert row["models"] == ["hybrid-deepseek-gpt55-medium"]
+    assert "warning" not in row
+    assert "key_env" not in row
+
+
+def test_hybrid_local_route_hides_custom_no_key_skeleton():
+    """Runtime provider=custom is an implementation detail for the hybrid route."""
+    rows = []
+    ctx = _empty_ctx(
+        provider="custom",
+        model="hybrid-deepseek-gpt55-medium",
+    )
+    with _list_auth_returning(rows):
+        payload = build_models_payload(
+            ctx,
+            include_unconfigured=True,
+            picker_hints=True,
+            canonical_order=True,
+        )
+
+    cloudflare = next(r for r in payload["providers"] if r["slug"] == "cloudflare-native")
+    assert cloudflare["is_current"] is True
+    assert cloudflare["authenticated"] is True
+    assert cloudflare["source"] == "hybrid-local-api"
+    assert not any(
+        r["slug"] == "custom" and r.get("source") == "canonical" and not r.get("models")
+        for r in payload["providers"]
+    )

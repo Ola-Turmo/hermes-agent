@@ -2392,3 +2392,32 @@ def test_trustworthy_check_accepts_custom_aliases():
         )
     # Unrelated provider name should still be rejected with non-loopback URL.
     assert fn("http://192.168.0.103:11434/v1", "openrouter") is False
+
+
+def test_cloudflare_native_hybrid_routes_to_local_api(monkeypatch):
+    """The dashboard must not route the hybrid model through CF_AIG_TOKEN auth."""
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "cloudflare-native",
+            "default": "hybrid-deepseek-gpt55-medium",
+        },
+    )
+    monkeypatch.delenv("HERMES_API_TOKEN", raising=False)
+    monkeypatch.setattr(
+        rp,
+        "_read_service_env_token",
+        lambda service, env: "service-token" if service == "paperclip-hermes-api.service" else "",
+    )
+
+    resolved = rp.resolve_runtime_provider(
+        requested="cloudflare-native",
+        target_model="hybrid-deepseek-gpt55-medium",
+    )
+
+    assert resolved["source"] == "hybrid-local-api"
+    assert resolved["provider"] == "custom"
+    assert resolved["api_mode"] == "chat_completions"
+    assert resolved["base_url"] == "http://127.0.0.1:8644/v1"
+    assert resolved["api_key"] == "service-token"

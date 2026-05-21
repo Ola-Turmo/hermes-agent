@@ -36,6 +36,9 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Optional
 
+HYBRID_LOCAL_MODEL = "hybrid-deepseek-gpt55-medium"
+HYBRID_LOCAL_PROVIDER = "cloudflare-native"
+
 
 # ─── Public types ───────────────────────────────────────────────────────
 
@@ -139,11 +142,14 @@ def build_models_payload(
         custom_providers=ctx.custom_providers,
         max_models=max_models,
     )
+    _mark_hybrid_local_row(rows, ctx)
 
     if include_unconfigured:
         rows = list(rows) + _append_unconfigured_rows(rows, ctx)
+        _mark_hybrid_local_row(rows, ctx)
     if picker_hints:
         _apply_picker_hints(rows)
+        _mark_hybrid_local_row(rows, ctx)
     if canonical_order:
         rows = _reorder_canonical(rows)
 
@@ -155,6 +161,67 @@ def build_models_payload(
 
 
 # ─── Internal: row post-processing ──────────────────────────────────────
+
+
+def _effective_hybrid_model(model: str) -> str:
+    value = str(model or "").strip()
+    prefix = f"{HYBRID_LOCAL_PROVIDER}/"
+    if value.startswith(prefix):
+        value = value[len(prefix):]
+    return value
+
+
+def _mark_hybrid_local_row(rows: list[dict], ctx: ConfigContext) -> None:
+    """Keep the TUI picker from treating the local hybrid route as no-key CF.
+
+    The hybrid model is selected through the canonical cloudflare-native
+    provider name for catalog/UI continuity, but execution is intentionally
+    redirected to the local Hermes API by runtime_provider. If the picker only
+    sees the canonical provider skeleton, it displays "paste CF_AIG_TOKEN" and
+    blocks a route that is actually callable through HERMES_API_TOKEN.
+    """
+    if _effective_hybrid_model(ctx.current_model) != HYBRID_LOCAL_MODEL:
+        return
+
+    # Runtime execution deliberately resolves the hybrid model to provider
+    # "custom" so it can call the local API proxy. The picker must still show
+    # the user-facing Cloudflare-native hybrid route, not the generic Custom
+    # skeleton. Remove that skeleton when it was only added by canonical fallback.
+    rows[:] = [
+        row
+        for row in rows
+        if not (
+            str(row.get("slug", "")).strip().lower() == "custom"
+            and row.get("source") == "canonical"
+            and not row.get("models")
+        )
+    ]
+
+    target = None
+    for row in rows:
+        if str(row.get("slug", "")).strip().lower() == HYBRID_LOCAL_PROVIDER:
+            target = row
+            break
+    if target is None:
+        target = {
+            "slug": HYBRID_LOCAL_PROVIDER,
+            "name": "Cloudflare Native AI Gateway",
+            "is_user_defined": False,
+            "source": "hybrid-local-api",
+        }
+        rows.append(target)
+
+    for row in rows:
+        if row is not target:
+            row["is_current"] = False
+    target["is_current"] = True
+    target["authenticated"] = True
+    target["source"] = "hybrid-local-api"
+    target["models"] = [HYBRID_LOCAL_MODEL]
+    target["total_models"] = 1
+    target.pop("auth_type", None)
+    target.pop("key_env", None)
+    target.pop("warning", None)
 
 
 def _append_unconfigured_rows(rows: list[dict], ctx: ConfigContext) -> list[dict]:

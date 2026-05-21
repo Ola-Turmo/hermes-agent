@@ -19,7 +19,6 @@
 import { FitAddon } from "@xterm/addon-fit";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebLinksAddon } from "@xterm/addon-web-links";
-import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { Button } from "@nous-research/ui/ui/components/button";
@@ -150,13 +149,15 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   );
 
   // The dashboard keeps ChatPage mounted persistently so the PTY survives tab
-  // switches. That is great for ordinary /chat navigation, but it means query
-  // param changes do NOT remount the component. Resume-in-chat from the
-  // Sessions page relies on `/chat?resume=<id>` changing at runtime, so we must
-  // treat the current resume target as part of the PTY identity and rebuild the
-  // terminal session when it changes.
+  // switches. A caller may also pin a channel in the URL for a fullscreen
+  // persistent chat. Preserve that channel across remounts; otherwise a refresh
+  // reconnects the sidebars to one channel while the PTY publishes on another.
   const resumeParam = searchParams.get("resume");
-  const channel = useMemo(() => generateChannelId(), [resumeParam]);
+  const channelParam = searchParams.get("channel");
+  const channel = useMemo(
+    () => channelParam || generateChannelId(),
+    [channelParam, resumeParam],
+  );
 
   useEffect(() => {
     if (!resumeParam) return;
@@ -427,25 +428,6 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
 
     term.open(host);
 
-    // WebGL draws from a texture atlas sized with device pixels. On phones and
-    // in DevTools device mode that often produces *visually* much larger cells
-    // than `fontSize` suggests — users see "huge" text even at 7–9px settings.
-    // The canvas/DOM renderer tracks `fontSize` faithfully; use it for narrow
-    // hosts.  Wide layouts still get WebGL for crisp box-drawing.
-    const useWebgl = terminalTierWidthPx(host) >= 768;
-    if (useWebgl) {
-      try {
-        const webgl = new WebglAddon();
-        webgl.onContextLoss(() => webgl.dispose());
-        term.loadAddon(webgl);
-      } catch (err) {
-        console.warn(
-          "[hermes-chat] WebGL renderer unavailable; falling back to default",
-          err,
-        );
-      }
-    }
-
     // Initial fit + resize observer.  fit.fit() reads the container's
     // current bounding box and resizes the terminal grid to match.
     //
@@ -611,6 +593,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       if (ws.readyState !== WebSocket.OPEN) return;
 
       if (SGR_MOUSE_RE.test(data)) {
+        return;
+      }
+
+      if (data === "\r") {
+        ws.send(new Uint8Array([13]));
         return;
       }
 
